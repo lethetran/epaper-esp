@@ -1,0 +1,272 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Điều khiển E-Paper ESP32 qua BLE</title>
+  <style>
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      background: #121212;
+      color: #e0e0e0;
+      max-width: 500px;
+      margin: 0 auto;
+      padding: 16px;
+    }
+    .card {
+      background: #1e1e1e;
+      border-radius: 12px;
+      padding: 16px;
+      margin-bottom: 16px;
+      border: 1px solid #333;
+    }
+    h2 { font-size: 1.1rem; margin-top: 0; color: #fff; }
+    button {
+      width: 100%;
+      padding: 12px;
+      border: none;
+      border-radius: 8px;
+      background: #ff5722;
+      color: white;
+      font-weight: bold;
+      font-size: 1rem;
+      cursor: pointer;
+      margin-top: 8px;
+    }
+    button:disabled { background: #555; }
+    .status {
+      display: inline-block;
+      width: 10px;
+      height: 10px;
+      border-radius: 50%;
+      background: #ff5252;
+      margin-right: 6px;
+    }
+    .status.connected { background: #4caf50; }
+    select, input[type="file"] {
+      width: 100%;
+      padding: 10px;
+      margin-top: 6px;
+      border-radius: 6px;
+      background: #2a2a2a;
+      border: 1px solid #444;
+      color: white;
+      box-sizing: border-box;
+    }
+    canvas {
+      width: 100%;
+      border-radius: 8px;
+      background: #fff;
+      margin-top: 12px;
+    }
+  </style>
+</head>
+<body>
+
+  <!-- Khối 1: Kết nối Bluetooth -->
+  <div class="card">
+    <h2>Trạng thái kết nối</h2>
+    <div>
+      <span id="statusDot" class="status"></span>
+      <span id="statusText">Chưa kết nối BLE</span>
+    </div>
+    <button id="btnConnect" onclick="connectBLE()">🔍 Tìm & Kết nối ESP32</button>
+  </div>
+
+  <!-- Khối 2: Tải & Chỉnh sửa ảnh -->
+  <div class="card">
+    <h2>Nguồn ảnh & Cấu hình</h2>
+    <input type="file" id="fileInput" accept="image/*" onchange="handleFileSelect(event)">
+
+    <label style="margin-top: 10px; display:block;">Thuật toán Dithering:</label>
+    <select id="algoSelect" onchange="processImage()">
+      <option value="bwr_none">BWR Không dithering</option>
+      <option value="bwr_floyd" selected>BWR Floyd-Steinberg (Đen/Trắng/Đỏ)</option>
+      <option value="bw_floyd">Đen & Trắng Floyd-Steinberg</option>
+    </select>
+
+    <div style="display: flex; gap: 8px; margin-top: 8px;">
+      <button onclick="rotateImage(90)">🔄 Xoay 90°</button>
+      <button onclick="resetImage()">↺ Đặt lại</button>
+    </div>
+
+    <canvas id="previewCanvas" width="400" height="300"></canvas>
+
+    <button id="btnSend" onclick="sendToESP32()" disabled>🚀 Tải lên màn hình</button>
+  </div>
+
+<script>
+  // UUID cấu hình khớp với ESP32
+  const SERVICE_UUID = "4fafc201-1fb5-459e-8fcc-c5c9c331914b";
+  const CHARACTERISTIC_UUID = "beb5483e-36e1-4688-b7f5-ea07361b26a8";
+
+  let bleDevice = null;
+  let bleCharacteristic = null;
+  let loadedImage = null;
+  let currentRotation = 0;
+
+  const canvas = document.getElementById('previewCanvas');
+  const ctx = canvas.getContext('2d');
+
+  // --- 1. KẾT NỐI WEB BLUETOOTH ---
+  async function connectBLE() {
+    try {
+      document.getElementById('statusText').innerText = "Đang quét thiết bị...";
+      
+      // Quét tìm ESP32 theo Service UUID hoặc tên
+      bleDevice = await navigator.bluetooth.requestDevice({
+        filters: [{ name: 'ESP32_EPaper_Display' }],
+        optionalServices: [SERVICE_UUID]
+      });
+
+      bleDevice.addEventListener('gattserverdisconnected', onDisconnected);
+
+      const server = await bleDevice.gatt.connect();
+      const service = await server.getPrimaryService(SERVICE_UUID);
+      bleCharacteristic = await service.getCharacteristic(CHARACTERISTIC_UUID);
+
+      document.getElementById('statusDot').classList.add('connected');
+      document.getElementById('statusText').innerText = "Đã kết nối: " + bleDevice.name;
+      document.getElementById('btnConnect').innerText = "Ngắt kết nối";
+      document.getElementById('btnConnect').onclick = disconnectBLE;
+      checkSendButtonStatus();
+    } catch (error) {
+      console.error(error);
+      alert("Kết nối thất bại: " + error.message);
+      document.getElementById('statusText').innerText = "Lỗi kết nối";
+    }
+  }
+
+  function disconnectBLE() {
+    if (bleDevice && bleDevice.gatt.connected) {
+      bleDevice.gatt.disconnect();
+    }
+  }
+
+  function onDisconnected() {
+    document.getElementById('statusDot').classList.remove('connected');
+    document.getElementById('statusText').innerText = "Đã ngắt kết nối";
+    document.getElementById('btnConnect').innerText = "🔍 Tìm & Kết nối ESP32";
+    document.getElementById('btnConnect').onclick = connectBLE;
+    bleCharacteristic = null;
+    checkSendButtonStatus();
+  }
+
+  function checkSendButtonStatus() {
+    document.getElementById('btnSend').disabled = !(bleCharacteristic && loadedImage);
+  }
+
+  // --- 2. XỬ LÝ VÀ CHỈNH SỬA ẢNH ---
+  function handleFileSelect(event) {
+    const file = event.target.files[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = function(e) {
+      loadedImage = new Image();
+      loadedImage.onload = function() {
+        currentRotation = 0;
+        processImage();
+        checkSendButtonStatus();
+      };
+      loadedImage.src = e.target.result;
+    };
+    reader.readAsDataURL(file);
+  }
+
+  function rotateImage(deg) {
+    currentRotation = (currentRotation + deg) % 360;
+    processImage();
+  }
+
+  function resetImage() {
+    currentRotation = 0;
+    processImage();
+  }
+
+  function processImage() {
+    if (!loadedImage) return;
+
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    ctx.save();
+    ctx.translate(canvas.width / 2, canvas.height / 2);
+    ctx.rotate((currentRotation * Math.PI) / 180);
+
+    // Kéo giãn / Fit ảnh vừa kích thước 400x300
+    let dw = canvas.width;
+    let dh = canvas.height;
+    if (currentRotation % 180 !== 0) {
+      dw = canvas.height;
+      dh = canvas.width;
+    }
+    ctx.drawImage(loadedImage, -dw / 2, -dh / 2, dw, dh);
+    ctx.restore();
+
+    // Áp dụng thuật toán Dithering
+    const mode = document.getElementById('algoSelect').value;
+    if (mode === 'bwr_floyd') {
+      applyFloydSteinbergBWR(ctx, canvas.width, canvas.height);
+    }
+  }
+
+  // Thuật toán Floyd-Steinberg Dithering cho 3 màu (Đen, Trắng, Đỏ)
+  function applyFloydSteinbergBWR(ctx, w, h) {
+    let imgData = ctx.getImageData(0, 0, w, h);
+    let d = imgData.data;
+
+    for (let y = 0; y < h; y++) {
+      for (let x = 0; x < w; x++) {
+        let i = (y * w + x) * 4;
+        let r = d[i], g = d[i+1], b = d[i+2];
+
+        // Tìm màu gần nhất giữa White, Black, Red
+        let dWhite = Math.hypot(r - 255, g - 255, b - 255);
+        let dBlack = Math.hypot(r, g, b);
+        let dRed   = Math.hypot(r - 255, g, b);
+
+        let nR = 255, nG = 255, nB = 255;
+        if (dRed < dWhite && dRed < dBlack) { nR = 255; nG = 0; nB = 0; }
+        else if (dBlack < dWhite) { nR = 0; nG = 0; nB = 0; }
+
+        d[i] = nR; d[i+1] = nG; d[i+2] = nB;
+
+        let errR = r - nR, errG = g - nG, errB = b - nB;
+
+        distributeError(d, w, h, x + 1, y, errR, errG, errB, 7/16);
+        distributeError(d, w, h, x - 1, y + 1, errR, errG, errB, 3/16);
+        distributeError(d, w, h, x, y + 1, errR, errG, errB, 5/16);
+        distributeError(d, w, h, x + 1, y + 1, errR, errG, errB, 1/16);
+      }
+    }
+    ctx.putImageData(imgData, 0, 0);
+  }
+
+  function distributeError(d, w, h, x, y, er, eg, eb, f) {
+    if (x < 0 || x >= w || y < 0 || y >= h) return;
+    let i = (y * w + x) * 4;
+    d[i]   = Math.min(255, Math.max(0, d[i]   + er * f));
+    d[i+1] = Math.min(255, Math.max(0, d[i+1] + eg * f));
+    d[i+2] = Math.min(255, Math.max(0, d[i+2] + eb * f));
+  }
+
+  // --- 3. TRUYỀN DỮ LIỆU SANG ESP32 CHIA NHỎ THEO CHUNK ---
+  async function sendToESP32() {
+    if (!bleCharacteristic) return;
+    alert("Đang truyền dữ liệu sang ESP32...");
+
+    // Chuyển Canvas thành mảng byte thô
+    const imgData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+    const rawBytes = new Uint8Array(canvas.width * canvas.height / 8); // Giả lập nén 1-bit
+
+    // Chia dữ liệu thành từng gói nhỏ (Chunk 512 bytes) để gửi qua BLE
+    const CHUNK_SIZE = 512;
+    for (let i = 0; i < rawBytes.length; i += CHUNK_SIZE) {
+      const chunk = rawBytes.slice(i, i + CHUNK_SIZE);
+      await bleCharacteristic.writeValueWithoutResponse(chunk);
+      await new Promise(r => setTimeout(r, 20)); // Delay nhẹ tránh tràn bộ đệm
+    }
+
+    alert("Truyền hoàn tất!");
+  }
+</script>
+</body>
+</html>
