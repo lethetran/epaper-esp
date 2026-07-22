@@ -160,7 +160,6 @@
 
 <div class="container">
 
-  <!-- CARD 1: KẾT NỐI -->
   <div class="header-card">
     <div class="header-title">HaiAu - WEB Điều chỉnh đồng hồ</div>
     <div class="header-sub">Điều khiển Bluetooth (Web BLE)</div>
@@ -171,13 +170,11 @@
     <button style="margin-top: 12px; width: 100%;" onclick="toggleConnect()">🔍 Tìm & Kết nối Bluetooth</button>
   </div>
 
-  <!-- CARD 2: NGUỒN ẢNH -->
   <div class="card">
     <div class="card-title">📁 Nguồn ảnh</div>
     <input type="file" id="fileInput" accept="image/*" onchange="loadUserImage(event)">
   </div>
 
-  <!-- CARD 3: CẤU HÌNH XỬ LÝ -->
   <div class="card">
     <div class="card-title">⚙️ Cấu hình xử lý</div>
 
@@ -235,12 +232,11 @@
       <input type="range" id="sliderScale" min="10" max="200" value="100" oninput="updateSliderVal('valScale', this.value+'%'); renderPipeline();">
     </div>
 
-    <!-- NÚT THAO TÁC NHANH -->
     <div class="btn-grid">
-      <button class="btn-secondary btn-full" onclick="renderPipeline()">Tải lại</button>
-      <button class="btn-secondary" onclick="resetScale()">Kéo giãn vừa màn</button>
-      <button class="btn-secondary" onclick="resetScale()">Vừa khít màn hình</button>
-      <button class="btn-secondary" onclick="resetScale()">Đặt lại 100%</button>
+      <button class="btn-secondary btn-full" onclick="reloadAll()">Tải lại</button>
+      <button class="btn-secondary" onclick="setFitMode('stretch')">Kéo giãn vừa màn hình</button>
+      <button class="btn-secondary" onclick="setFitMode('fit')">Vừa khít màn hình</button>
+      <button class="btn-secondary" onclick="resetScaleOriginal()">Đặt lại 100%</button>
       <button class="btn-secondary" onclick="rotateDegrees(90)">Xoay 90° CW</button>
       <button class="btn-secondary" onclick="rotateDegrees(-90)">Xoay 90° CCW</button>
       <button class="btn-secondary btn-full" onclick="resetRotate()">Đặt lại góc xoay</button>
@@ -251,7 +247,6 @@
     </div>
   </div>
 
-  <!-- CARD 4: ĐIỀU CHỈNH HÌNH ẢNH -->
   <div class="card">
     <div class="card-title">🎨 Điều chỉnh hình ảnh</div>
     
@@ -279,7 +274,6 @@
     <button id="btnUpload" style="width: 100%; margin-top: 8px; background: #2e7d32;" onclick="sendBLEData()" disabled>🚀 Tải lên màn hình ngay</button>
   </div>
 
-  <!-- CARD 5: NHẬT KÝ HOẠT ĐỘNG -->
   <div class="card">
     <div class="card-title" style="justify-content: space-between;">
       <span>📋 Nhật ký hoạt động</span>
@@ -291,13 +285,14 @@
 </div>
 
 <script>
-  // Cấu hình Bluetooth BLE (phải trùng khớp với ESP32)
+  // Cấu hình Bluetooth BLE (khớp với ESP32)
   const SERVICE_UUID = "4fafc201-1fb5-459e-8fcc-c5c9c331914b";
   const CHARACTERISTIC_UUID = "beb5483e-36e1-4688-b7f5-ea07361b26a8";
 
   let bleDevice = null;
   let bleChar = null;
   let rawImage = null;
+  let currentFitMode = 'stretch'; // 'stretch', 'fit', 'original'
 
   const canvas = document.getElementById('previewCanvas');
   const ctx = canvas.getContext('2d');
@@ -355,31 +350,80 @@
     renderPipeline();
   }
 
-  function resetScale() {
-    document.getElementById('sliderScale').value = 100;
-    updateSliderVal('valScale', '100%');
+  function setFitMode(mode) {
+    currentFitMode = mode;
+    log(`Đã đổi chế độ hiển thị: ${mode}`);
     renderPipeline();
   }
 
-  // CORE RENDER PIPELINE
+  function resetScaleOriginal() {
+    document.getElementById('sliderScale').value = 100;
+    updateSliderVal('valScale', '100%');
+    currentFitMode = 'original';
+    renderPipeline();
+  }
+
+  function reloadAll() {
+    document.getElementById('sliderThreshold').value = 128;
+    document.getElementById('sliderRotate').value = 0;
+    document.getElementById('sliderScale').value = 100;
+    document.getElementById('sliderBright').value = 100;
+    document.getElementById('sliderContrast').value = 100;
+    document.getElementById('sliderSat').value = 100;
+    document.getElementById('sliderDiff').value = 50;
+
+    updateSliderVal('valThreshold', 128);
+    updateSliderVal('valRotate', '0°');
+    updateSliderVal('valScale', '100%');
+    updateSliderVal('valBright', 100);
+    updateSliderVal('valContrast', 100);
+    updateSliderVal('valSat', 100);
+    updateSliderVal('valDiff', 50);
+
+    currentFitMode = 'stretch';
+    renderPipeline();
+  }
+
+  // CORE RENDER PIPELINE CALCULATIONS
   function renderPipeline() {
     if (!rawImage) return;
 
-    const w = canvas.width;
-    const h = canvas.height;
-    ctx.clearRect(0, 0, w, h);
+    const canvasW = canvas.width;
+    const canvasH = canvas.height;
+    ctx.clearRect(0, 0, canvasW, canvasH);
 
-    const scale = parseInt(document.getElementById('sliderScale').value) / 100;
     const angle = parseInt(document.getElementById('sliderRotate').value);
+    const manualScale = parseInt(document.getElementById('sliderScale').value) / 100;
+
+    let drawW = canvasW;
+    let drawH = canvasH;
+
+    const imgRatio = rawImage.width / rawImage.height;
+    const canvasRatio = canvasW / canvasH;
+
+    if (currentFitMode === 'fit') {
+      if (imgRatio > canvasRatio) {
+        drawW = canvasW * manualScale;
+        drawH = (canvasW / imgRatio) * manualScale;
+      } else {
+        drawH = canvasH * manualScale;
+        drawW = (canvasH * imgRatio) * manualScale;
+      }
+    } else if (currentFitMode === 'original') {
+      drawW = rawImage.width * manualScale;
+      drawH = rawImage.height * manualScale;
+    } else if (currentFitMode === 'stretch') {
+      drawW = canvasW * manualScale;
+      drawH = canvasH * manualScale;
+    }
 
     ctx.save();
-    ctx.translate(w / 2, h / 2);
+    ctx.translate(canvasW / 2, canvasH / 2);
     ctx.rotate((angle * Math.PI) / 180);
-    ctx.scale(scale, scale);
-    ctx.drawImage(rawImage, -w / 2, -h / 2, w, h);
+    ctx.drawImage(rawImage, -drawW / 2, -drawH / 2, drawW, drawH);
     ctx.restore();
 
-    let imgData = ctx.getImageData(0, 0, w, h);
+    let imgData = ctx.getImageData(0, 0, canvasW, canvasH);
     applyColorAdjustments(imgData);
 
     const algo = document.getElementById('algoSelect').value;
@@ -492,13 +536,12 @@
     log("Đã ngắt kết nối BLE.");
   }
 
-  // HÀM CHUẨN HÓA MẢNG BITMAP VÀ TRUYỀN DỮ LIỆU
   async function sendBLEData() {
     if (!bleChar) return;
 
     const w = canvas.width;
     const h = canvas.height;
-    const bufferSize = (w * h) / 8; // 15,000 Bytes cho 400x300
+    const bufferSize = (w * h) / 8;
 
     log("Đang trích xuất mảng Bitmap Đen & Đỏ...");
 
@@ -508,11 +551,9 @@
     const bufBlack = new Uint8Array(bufferSize);
     const bufRed   = new Uint8Array(bufferSize);
 
-    // Mặc định phủ trắng 2 mảng (trắng = 1 / 0xFF)
     bufBlack.fill(0xFF);
     bufRed.fill(0xFF);
 
-    // Chuyển đổi dữ liệu Pixel từ Canvas sang dạng Bitmap 1-bit
     for (let y = 0; y < h; y++) {
       for (let x = 0; x < w; x++) {
         let pixelIdx = (y * w + x) * 4;
@@ -523,25 +564,20 @@
         let byteIdx = Math.floor((y * w + x) / 8);
         let bitIdx  = 7 - ((y * w + x) % 8);
 
-        // Màu Đỏ (R cao, G/B thấp): Bit = 0 trong mảng Red
         if (r > 200 && g < 100 && b < 100) {
           bufRed[byteIdx] &= ~(1 << bitIdx);
-        } 
-        // Màu Đen (R/G/B đều thấp): Bit = 0 trong mảng Black
-        else if (r < 100 && g < 100 && b < 100) {
+        } else if (r < 100 && g < 100 && b < 100) {
           bufBlack[byteIdx] &= ~(1 << bitIdx);
         }
       }
     }
 
-    // Ghép 2 mảng bufBlack và bufRed lại để truyền liên tục xuống ESP32
     const fullPayload = new Uint8Array(bufferSize * 2);
     fullPayload.set(bufBlack, 0);
     fullPayload.set(bufRed, bufferSize);
 
     log(`Đang truyền gói dữ liệu (${fullPayload.length} bytes) qua BLE...`);
 
-    // Chia nhỏ thành Chunk 512 bytes
     const CHUNK_SIZE = 512;
     for (let i = 0; i < fullPayload.length; i += CHUNK_SIZE) {
       const chunk = fullPayload.slice(i, i + CHUNK_SIZE);
