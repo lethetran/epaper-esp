@@ -1,528 +1,60 @@
-<!DOCTYPE html>
-<html lang="vi">
-<head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>WEB Điều chỉnh đồng hồ / E-Paper BLE</title>
-  <style>
-    :root {
-      --bg-color: #121212;
-      --card-bg: #1e1e1e;
-      --card-border: #2c2c2c;
-      --primary: #ff5722;
-      --primary-hover: #f4511e;
-      --text-main: #e0e0e0;
-      --text-muted: #a0a0a0;
-      --input-bg: #2a2a2a;
-    }
+async function sendBLEData() {
+  if (!bleChar) return;
+  
+  const w = canvas.width;
+  const h = canvas.height;
+  const bufferSize = (w * h) / 8; // 15,000 Bytes cho màn 400x300
 
-    * { box-sizing: border-box; }
-    body {
-      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-      background-color: var(--bg-color);
-      color: var(--text-main);
-      margin: 0;
-      padding: 16px;
-      display: flex;
-      justify-content: center;
-    }
+  log("Đang trích xuất dữ liệu ảnh (Đen & Đỏ)...");
+  
+  const imgData = ctx.getImageData(0, 0, w, h);
+  const d = imgData.data;
 
-    .container {
-      width: 100%;
-      max-width: 480px;
-      display: flex;
-      flex-direction: column;
-      gap: 16px;
-    }
+  const bufBlack = new Uint8Array(bufferSize);
+  const bufRed   = new Uint8Array(bufferSize);
 
-    .header-card {
-      background: var(--card-bg);
-      border-radius: 16px;
-      padding: 16px;
-      border: 1px solid var(--card-border);
-      text-align: center;
-    }
+  // Mặc định phủ trắng 2 mảng (màu trắng trong E-paper 1-bit là 1 / 0xFF)
+  bufBlack.fill(0xFF);
+  bufRed.fill(0xFF);
 
-    .header-title {
-      font-size: 1.2rem;
-      font-weight: bold;
-      color: #fff;
-      margin-bottom: 4px;
-    }
-    .header-sub { font-size: 0.85rem; color: var(--text-muted); }
+  // Chuyển đổi dữ liệu Pixel từ Canvas sang dạng Bitmap 1-bit
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      let pixelIdx = (y * w + x) * 4;
+      let r = d[pixelIdx];
+      let g = d[pixelIdx + 1];
+      let b = d[pixelIdx + 2];
 
-    .status-bar {
-      margin-top: 12px;
-      padding: 10px;
-      background: var(--input-bg);
-      border-radius: 20px;
-      font-size: 0.9rem;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      gap: 8px;
-    }
-    .dot { width: 10px; height: 10px; border-radius: 50%; background: #ff5252; }
-    .dot.connected { background: #4caf50; }
+      let byteIdx = Math.floor((y * w + x) / 8);
+      let bitIdx  = 7 - ((y * w + x) % 8);
 
-    .card {
-      background: var(--card-bg);
-      border-radius: 16px;
-      padding: 16px;
-      border: 1px solid var(--card-border);
-    }
-
-    .card-title {
-      font-size: 1rem;
-      font-weight: 600;
-      margin-bottom: 12px;
-      display: flex;
-      align-items: center;
-      gap: 8px;
-    }
-
-    label { display: block; font-size: 0.85rem; color: var(--text-muted); margin-top: 10px; margin-bottom: 4px; }
-    
-    select, input[type="file"] {
-      width: 100%;
-      padding: 10px;
-      background: var(--input-bg);
-      border: 1px solid var(--card-border);
-      color: #fff;
-      border-radius: 8px;
-      font-size: 0.9rem;
-      outline: none;
-    }
-
-    .slider-group {
-      margin-top: 8px;
-    }
-    .slider-header {
-      display: flex;
-      justify-content: space-between;
-      font-size: 0.85rem;
-      margin-bottom: 2px;
-    }
-    input[type="range"] {
-      width: 100%;
-      accent-color: var(--primary);
-    }
-
-    .btn-grid {
-      display: grid;
-      grid-template-columns: 1fr 1fr;
-      gap: 8px;
-      margin-top: 12px;
-    }
-    .btn-full { grid-column: span 2; }
-
-    button {
-      padding: 11px;
-      background: var(--primary);
-      color: white;
-      border: none;
-      border-radius: 8px;
-      font-weight: 600;
-      font-size: 0.9rem;
-      cursor: pointer;
-      transition: background 0.2s;
-    }
-    button:hover { background: var(--primary-hover); }
-    button:disabled { background: #444; color: #888; cursor: not-allowed; }
-    button.btn-secondary { background: var(--input-bg); border: 1px solid var(--card-border); }
-
-    .canvas-container {
-      background: #000;
-      border-radius: 12px;
-      padding: 12px;
-      display: flex;
-      justify-content: center;
-      align-items: center;
-      margin-top: 12px;
-      overflow: hidden;
-    }
-    canvas { background: #fff; border-radius: 4px; max-width: 100%; height: auto; }
-
-    .log-box {
-      background: #0d0d0d;
-      border-radius: 8px;
-      padding: 10px;
-      font-family: monospace;
-      font-size: 0.8rem;
-      color: #00ff66;
-      height: 120px;
-      overflow-y: auto;
-      border: 1px solid #222;
-    }
-  </style>
-</head>
-<body>
-
-<div class="container">
-
-  <!-- CARD 1: KẾT NỐI -->
-  <div class="header-card">
-    <div class="header-title">HaiAu - WEB Điều chỉnh đồng hồ</div>
-    <div class="header-sub">Điều khiển Bluetooth (Web BLE)</div>
-    <div class="status-bar">
-      <span id="statusDot" class="dot"></span>
-      <span id="statusText">Chưa kết nối</span>
-    </div>
-    <button style="margin-top: 12px; width: 100%;" onclick="toggleConnect()">🔍 Tìm & Kết nối Bluetooth</button>
-  </div>
-
-  <!-- CARD 2: NGUỒN ẢNH -->
-  <div class="card">
-    <div class="card-title">📁 Nguồn ảnh</div>
-    <input type="file" id="fileInput" accept="image/*" onchange="loadUserImage(event)">
-  </div>
-
-  <!-- CARD 3: CẤU HÌNH XỬ LÝ -->
-  <div class="card">
-    <div class="card-title">⚙️ Cấu hình xử lý</div>
-
-    <label>Kích thước màn hình:</label>
-    <select id="screenSelect" onchange="updateCanvasSize()">
-      <option value="400x300" selected>4.2" Truyền ảnh (400x300)</option>
-      <option value="400x300_cal">4.2" Lịch nhỏ (400x300)</option>
-      <option value="800x480">7.5" Truyền ảnh (800x480)</option>
-      <option value="296x128">2.9" Truyền ảnh (296x128)</option>
-      <option value="212x104">2.13" 212x104</option>
-      <option value="250x144">2.13" 250x144</option>
-    </select>
-
-    <label>Thuật toán dithering:</label>
-    <select id="algoSelect" onchange="renderPipeline()">
-      <optgroup label="Ba màu Đen/Trắng/Đỏ">
-        <option value="bwr_none">BWR Không dithering</option>
-        <option value="bwr_floyd" selected>BWR Floyd-Steinberg</option>
-        <option value="bwr_atkinson">BWR Atkinson</option>
-        <option value="bwr_bayer">BWR Bayer</option>
-        <option value="bwr_stucki">BWR Stucki</option>
-        <option value="bwr_jarvis">BWR Jarvis-Judice-Ninke</option>
-      </optgroup>
-      <optgroup label="Đen & Trắng">
-        <option value="bw_none">Không dithering</option>
-        <option value="bw_floyd">Floyd-Steinberg</option>
-        <option value="bw_atkinson">Atkinson</option>
-        <option value="bw_bayer">Bayer</option>
-        <option value="bw_stucki">Stucki</option>
-        <option value="bw_jarvis">Jarvis-Judice-Ninke</option>
-      </optgroup>
-    </select>
-
-    <div class="slider-group">
-      <div class="slider-header">
-        <span>Ngưỡng (Đen / Trắng)</span>
-        <span id="valThreshold">128</span>
-      </div>
-      <input type="range" id="sliderThreshold" min="0" max="255" value="128" oninput="updateSliderVal('valThreshold', this.value); renderPipeline();">
-    </div>
-
-    <div class="slider-group">
-      <div class="slider-header">
-        <span>Góc xoay</span>
-        <span id="valRotate">0°</span>
-      </div>
-      <input type="range" id="sliderRotate" min="0" max="360" value="0" oninput="updateSliderVal('valRotate', this.value+'°'); renderPipeline();">
-    </div>
-
-    <div class="slider-group">
-      <div class="slider-header">
-        <span>Tỷ lệ (%)</span>
-        <span id="valScale">100%</span>
-      </div>
-      <input type="range" id="sliderScale" min="10" max="200" value="100" oninput="updateSliderVal('valScale', this.value+'%'); renderPipeline();">
-    </div>
-
-    <!-- NÚT THAO TÁC NHANH -->
-    <div class="btn-grid">
-      <button class="btn-secondary btn-full" onclick="renderPipeline()">Tải lại</button>
-      <button class="btn-secondary" onclick="fitMode('stretch')">Kéo giãn vừa màn</button>
-      <button class="btn-secondary" onclick="fitMode('fit')">Vừa khít màn hình</button>
-      <button class="btn-secondary" onclick="resetScale()">Đặt lại 100%</button>
-      <button class="btn-secondary" onclick="rotateDegrees(90)">Xoay 90° CW</button>
-      <button class="btn-secondary" onclick="rotateDegrees(-90)">Xoay 90° CCW</button>
-      <button class="btn-secondary" onclick="resetRotate()">Đặt lại góc xoay</button>
-    </div>
-
-    <div class="canvas-container">
-      <canvas id="previewCanvas" width="400" height="300"></canvas>
-    </div>
-  </div>
-
-  <!-- CARD 4: ĐIỀU CHỈNH HÌNH ẢNH -->
-  <div class="card">
-    <div class="card-title">🎨 Điều chỉnh hình ảnh</div>
-    
-    <div class="slider-group">
-      <div class="slider-header"><span>Độ sáng</span><span id="valBright">100</span></div>
-      <input type="range" id="sliderBright" min="0" max="200" value="100" oninput="updateSliderVal('valBright', this.value); renderPipeline();">
-    </div>
-
-    <div class="slider-group">
-      <div class="slider-header"><span>Độ tương phản</span><span id="valContrast">100</span></div>
-      <input type="range" id="sliderContrast" min="0" max="200" value="100" oninput="updateSliderVal('valContrast', this.value); renderPipeline();">
-    </div>
-
-    <div class="slider-group">
-      <div class="slider-header"><span>Độ bão hòa</span><span id="valSat">100</span></div>
-      <input type="range" id="sliderSat" min="0" max="200" value="100" oninput="updateSliderVal('valSat', this.value); renderPipeline();">
-    </div>
-
-    <div class="slider-group">
-      <div class="slider-header"><span>Cường độ khuếch tán</span><span id="valDiff">50</span></div>
-      <input type="range" id="sliderDiff" min="0" max="100" value="50" oninput="updateSliderVal('valDiff', this.value); renderPipeline();">
-    </div>
-
-    <button style="width: 100%; margin-top: 14px;" onclick="renderPipeline()">Áp dụng điều chỉnh hình ảnh</button>
-    <button id="btnUpload" style="width: 100%; margin-top: 8px; background: #2e7d32;" onclick="sendBLEData()" disabled>🚀 Tải lên màn hình ngay</button>
-  </div>
-
-  <!-- CARD 5: NHẬT KÝ HOẠT ĐỘNG -->
-  <div class="card">
-    <div class="card-title" style="justify-content: space-between;">
-      <span>📋 Nhật ký hoạt động</span>
-      <button class="btn-secondary" style="padding: 4px 8px; font-size: 0.75rem;" onclick="clearLog()">Xóa nhật ký</button>
-    </div>
-    <div id="logBox" class="log-box"></div>
-  </div>
-
-</div>
-
-<script>
-  // Bluetooth BLE Constants
-  const SERVICE_UUID = "4fafc201-1fb5-459e-8fcc-c5c9c331914b";
-  const CHARACTERISTIC_UUID = "beb5483e-36e1-4688-b7f5-ea07361b26a8";
-
-  let bleDevice = null;
-  let bleChar = null;
-  let rawImage = null;
-
-  const canvas = document.getElementById('previewCanvas');
-  const ctx = canvas.getContext('2d');
-
-  function log(msg) {
-    const box = document.getElementById('logBox');
-    const time = new Date().toLocaleTimeString();
-    box.innerHTML += `<div>${time} : ${msg}</div>`;
-    box.scrollTop = box.scrollHeight;
-  }
-
-  function clearLog() {
-    document.getElementById('logBox').innerHTML = '';
-  }
-
-  function updateSliderVal(id, val) {
-    document.getElementById(id).innerText = val;
-  }
-
-  function updateCanvasSize() {
-    const [w, h] = document.getElementById('screenSelect').value.split('x').map(Number);
-    canvas.width = w;
-    canvas.height = h;
-    log(`Đã cập nhật kích thước canvas: ${w}x${h}`);
-    renderPipeline();
-  }
-
-  function loadUserImage(e) {
-    const file = e.target.files[0];
-    if (!file) return;
-    const reader = new FileReader();
-    reader.onload = function(evt) {
-      rawImage = new Image();
-      rawImage.onload = function() {
-        log(`Đã tải ảnh thành công (${rawImage.width}x${rawImage.height})`);
-        renderPipeline();
-      };
-      rawImage.src = evt.target.result;
-    };
-    reader.readAsDataURL(file);
-  }
-
-  function rotateDegrees(deg) {
-    let slider = document.getElementById('sliderRotate');
-    let current = parseInt(slider.value);
-    let next = (current + deg + 360) % 360;
-    slider.value = next;
-    updateSliderVal('valRotate', next + '°');
-    renderPipeline();
-  }
-
-  function resetRotate() {
-    document.getElementById('sliderRotate').value = 0;
-    updateSliderVal('valRotate', '0°');
-    renderPipeline();
-  }
-
-  function resetScale() {
-    document.getElementById('sliderScale').value = 100;
-    updateSliderVal('valScale', '100%');
-    renderPipeline();
-  }
-
-  function fitMode(type) {
-    if (!rawImage) return;
-    if (type === 'stretch') {
-      document.getElementById('sliderScale').value = 100;
-      updateSliderVal('valScale', '100%');
-    }
-    renderPipeline();
-  }
-
-  // --- CORE IMAGE PROCESSING PIPELINE ---
-  function renderPipeline() {
-    if (!rawImage) return;
-
-    const w = canvas.width;
-    const h = canvas.height;
-    ctx.clearRect(0, 0, w, h);
-
-    const scale = parseInt(document.getElementById('sliderScale').value) / 100;
-    const angle = parseInt(document.getElementById('sliderRotate').value);
-
-    ctx.save();
-    ctx.translate(w / 2, h / 2);
-    ctx.rotate((angle * Math.PI) / 180);
-    ctx.scale(scale, scale);
-    ctx.drawImage(rawImage, -w / 2, -h / 2, w, h);
-    ctx.restore();
-
-    // Adjust Brightness / Contrast / Saturation
-    let imgData = ctx.getImageData(0, 0, w, h);
-    applyColorAdjustments(imgData);
-
-    // Apply Selected Dithering Algorithm
-    const algo = document.getElementById('algoSelect').value;
-    applyDithering(imgData, algo);
-
-    ctx.putImageData(imgData, 0, 0);
-  }
-
-  function applyColorAdjustments(imgData) {
-    const b = parseInt(document.getElementById('sliderBright').value) / 100;
-    const c = parseInt(document.getElementById('sliderContrast').value) / 100;
-    const d = imgData.data;
-
-    for (let i = 0; i < d.length; i += 4) {
-      d[i]   = Math.min(255, Math.max(0, (d[i] - 128) * c + 128 * b));
-      d[i+1] = Math.min(255, Math.max(0, (d[i+1] - 128) * c + 128 * b));
-      d[i+2] = Math.min(255, Math.max(0, (d[i+2] - 128) * c + 128 * b));
-    }
-  }
-
-  // DITHERING IMPLEMENTATIONS
-  function applyDithering(imgData, algo) {
-    const w = imgData.width;
-    const h = imgData.height;
-    const d = imgData.data;
-    const isBWR = algo.startsWith('bwr');
-    const thresh = parseInt(document.getElementById('sliderThreshold').value);
-    const diffFactor = parseInt(document.getElementById('sliderDiff').value) / 100;
-
-    for (let y = 0; y < h; y++) {
-      for (let x = 0; x < w; x++) {
-        let i = (y * w + x) * 4;
-        let r = d[i], g = d[i+1], b = d[i+2];
-
-        let nR, nG, nB;
-        if (isBWR) {
-          let dW = Math.hypot(r-255, g-255, b-255);
-          let dB = Math.hypot(r, g, b);
-          let dR = Math.hypot(r-255, g, b);
-          if (dR < dW && dR < dB) { nR = 255; nG = 0; nB = 0; }
-          else if (dB < dW) { nR = 0; nG = 0; nB = 0; }
-          else { nR = 255; nG = 255; nB = 255; }
-        } else {
-          let gray = 0.299*r + 0.587*g + 0.114*b;
-          let val = gray < thresh ? 0 : 255;
-          nR = nG = nB = val;
-        }
-
-        d[i] = nR; d[i+1] = nG; d[i+2] = nB;
-
-        let errR = (r - nR) * diffFactor;
-        let errG = (g - nG) * diffFactor;
-        let errB = (b - nB) * diffFactor;
-
-        if (algo.includes('floyd')) {
-          distributeErr(d, w, h, x+1, y, errR, errG, errB, 7/16);
-          distributeErr(d, w, h, x-1, y+1, errR, errG, errB, 3/16);
-          distributeErr(d, w, h, x, y+1, errR, errG, errB, 5/16);
-          distributeErr(d, w, h, x+1, y+1, errR, errG, errB, 1/16);
-        } else if (algo.includes('atkinson')) {
-          distributeErr(d, w, h, x+1, y, errR, errG, errB, 1/8);
-          distributeErr(d, w, h, x+2, y, errR, errG, errB, 1/8);
-          distributeErr(d, w, h, x-1, y+1, errR, errG, errB, 1/8);
-          distributeErr(d, w, h, x, y+1, errR, errG, errB, 1/8);
-          distributeErr(d, w, h, x+1, y+1, errR, errG, errB, 1/8);
-          distributeErr(d, w, h, x, y+2, errR, errG, errB, 1/8);
-        }
+      // Nhận diện màu Đỏ (R cao, G và B thấp)
+      if (r > 200 && g < 100 && b < 100) {
+        // Màu Đỏ: Trong mảng Red bit = 0
+        bufRed[byteIdx] &= ~(1 << bitIdx);
+      } 
+      // Nhận diện màu Đen (Cả R, G, B đều thấp)
+      else if (r < 100 && g < 100 && b < 100) {
+        // Màu Đen: Trong mảng Black bit = 0
+        bufBlack[byteIdx] &= ~(1 << bitIdx);
       }
     }
   }
 
-  function distributeErr(d, w, h, x, y, er, eg, eb, f) {
-    if (x < 0 || x >= w || y < 0 || y >= h) return;
-    let i = (y * w + x) * 4;
-    d[i]   = Math.min(255, Math.max(0, d[i] + er * f));
-    d[i+1] = Math.min(255, Math.max(0, d[i+1] + eg * f));
-    d[i+2] = Math.min(255, Math.max(0, d[i+2] + eb * f));
+  // Ghép 2 mảng bufBlack và bufRed lại để gửi liên tục xuống ESP32
+  const fullPayload = new Uint8Array(bufferSize * 2);
+  fullPayload.set(bufBlack, 0);
+  fullPayload.set(bufRed, bufferSize);
+
+  log(`Đang truyền gói dữ liệu (${fullPayload.length} bytes) qua BLE...`);
+
+  // Chia nhỏ gửi theo Chunk 512 bytes
+  const CHUNK_SIZE = 512;
+  for (let i = 0; i < fullPayload.length; i += CHUNK_SIZE) {
+    const chunk = fullPayload.slice(i, i + CHUNK_SIZE);
+    await bleChar.writeValueWithoutResponse(chunk);
+    await new Promise(r => setTimeout(r, 20)); // Delay nhẹ 20ms tránh nghẽn BLE
   }
 
-  // BLE CONNECTIONS
-  async function toggleConnect() {
-    if (bleDevice && bleDevice.gatt.connected) {
-      bleDevice.gatt.disconnect();
-      return;
-    }
-    try {
-      log("Đang quét thiết bị BLE...");
-      bleDevice = await navigator.bluetooth.requestDevice({
-        filters: [{ name: 'ESP32_EPaper_Display' }],
-        optionalServices: [SERVICE_UUID]
-      });
-
-      bleDevice.addEventListener('gattserverdisconnected', onDisconnected);
-      const server = await bleDevice.gatt.connect();
-      const service = await server.getPrimaryService(SERVICE_UUID);
-      bleChar = await service.getCharacteristic(CHARACTERISTIC_UUID);
-
-      document.getElementById('statusDot').classList.add('connected');
-      document.getElementById('statusText').innerText = "Đã kết nối: " + bleDevice.name;
-      document.getElementById('btnUpload').disabled = false;
-      log("Kết nối Bluetooth thành công!");
-    } catch (e) {
-      log("Lỗi kết nối: " + e.message);
-    }
-  }
-
-  function onDisconnected() {
-    document.getElementById('statusDot').classList.remove('connected');
-    document.getElementById('statusText').innerText = "Chưa kết nối";
-    document.getElementById('btnUpload').disabled = true;
-    log("Đã ngắt kết nối BLE.");
-  }
-
-  async function sendBLEData() {
-    if (!bleChar) return;
-    log("Đang chuẩn bị gói dữ liệu nén...");
-    const imgData = ctx.getImageData(0, 0, canvas.width, canvas.height);
-    const rawBytes = new Uint8Array(canvas.width * canvas.height / 8);
-
-    log("Đang truyền dữ liệu qua BLE...");
-    const CHUNK = 512;
-    for (let i = 0; i < rawBytes.length; i += CHUNK) {
-      const chunk = rawBytes.slice(i, i + CHUNK);
-      await bleChar.writeValueWithoutResponse(chunk);
-      await new Promise(r => setTimeout(r, 20));
-    }
-    log("Truyền dữ liệu lên màn hình thành công!");
-  }
-
-  // Init default canvas log
-  log("Đã khởi tạo ứng dụng Web E-Paper.");
-  log("Kích thước Canvas mặc định: 400x300");
-</script>
-</body>
-</html>
+  log("✅ Đã gửi xong! Màn hình đang tiến hành làm tươi (Refresh)...");
+}
